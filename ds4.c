@@ -37381,6 +37381,7 @@ struct ds4_engine {
     float mtp_margin;
     float dspark_confidence_threshold;
     bool dspark_confidence_threshold_set;
+    char *model_path;
     char *directional_steering_file;
     float *directional_steering_dirs;
     float directional_steering_attn_scale;
@@ -60476,6 +60477,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
     ds4_engine *e = xcalloc(1, sizeof(*e));
     e->model.fd = -1;
     e->mtp_model.fd = -1;
+    e->model_path = ds4_strdup(opt->model_path ? opt->model_path : "");
     e->backend = opt->backend;
     e->quality = opt->quality;
     e->glm_mtp = opt->glm_mtp;
@@ -60514,12 +60516,14 @@ static int ds4_engine_open_internal(ds4_engine **out,
          gpu_cfg->n_gpus < 2 || (gpu_cfg->n_gpus & 1) != 0)) {
         fprintf(stderr,
                 "ds4: --cuda-tensor-parallel requires an even multi-GPU CUDA placement\n");
+        free(e->model_path);
         free(e);
         *out = NULL;
         return 1;
     }
     if (opt->dspark && (!opt->mtp_path || !opt->mtp_path[0])) {
         fprintf(stderr, "ds4: --dspark requires --mtp-model FILE\n");
+        free(e->model_path);
         free(e);
         *out = NULL;
         return 1;
@@ -60528,6 +60532,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         (!opt->directional_steering_file || !opt->directional_steering_file[0]))
     {
         fprintf(stderr, "ds4: directional steering needs --dir-steering-file\n");
+        free(e->model_path);
         free(e);
         *out = NULL;
         return 1;
@@ -61449,6 +61454,10 @@ const char *ds4_engine_model_name(ds4_engine *e) {
     return DS4_MODEL_SHAPE_NAME;
 }
 
+const char *ds4_engine_model_path(ds4_engine *e) {
+    return e && e->model_path ? e->model_path : "";
+}
+
 int ds4_engine_layer_count(ds4_engine *e) {
     (void)e;
     if (DS4_MODEL_FAMILY == DS4_MODEL_FAMILY_GLM_DSA) {
@@ -61734,6 +61743,7 @@ void ds4_engine_close(ds4_engine *e) {
     ds4_release_instance_lock();
     free(e->directional_steering_dirs);
     free(e->directional_steering_file);
+    free(e->model_path);
     free(e);
 }
 

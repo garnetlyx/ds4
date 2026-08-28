@@ -226,6 +226,7 @@ uint32_t ds4_engine_prefill_chunk(ds4_engine *e);
 int ds4_engine_power(ds4_engine *e);
 int ds4_engine_set_power(ds4_engine *e, int power_percent);
 const char *ds4_engine_model_name(ds4_engine *e);
+const char *ds4_engine_model_path(ds4_engine *e);
 int ds4_engine_layer_count(ds4_engine *e);
 /* Decode gate schedule for the TP transport; see ds4_tp_identity. */
 enum { DS4_TP_GATE_MASK_WORDS = 3 };
