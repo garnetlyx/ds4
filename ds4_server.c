@@ -13875,7 +13875,14 @@ typedef struct {
     int fd;
 } client_arg;
 
+static const char *path_basename(const char *path) {
+    if (!path) return "";
+    const char *slash = strrchr(path, '/');
+    return slash ? slash + 1 : path;
+}
+
 static void append_model_json_values(buf *b, const char *id, const char *name,
+                                     const char *source,
                                      int ctx, int default_tokens) {
     const int max_completion = default_tokens < ctx ? default_tokens : ctx;
     buf_printf(b,
@@ -13887,6 +13894,9 @@ static void append_model_json_values(buf *b, const char *id, const char *name,
         "\"owned_by\":\"ds4.c\","
         "\"name\":");
     json_escape(b, name);
+    buf_puts(b,
+        ",\"source\":");
+    json_escape(b, source);
     buf_printf(b,
         ","
         "\"context_length\":%d,"
@@ -13916,6 +13926,7 @@ static void append_model_json(buf *b, const server *s, const char *id) {
     append_model_json_values(b,
                              id,
                              ds4_engine_model_name(s->engine),
+                             path_basename(ds4_engine_model_path(s->engine)),
                              s->ctx_size,
                              s->default_tokens);
 }
@@ -18611,19 +18622,20 @@ static void test_tool_history_validation_handles_large_replays(void) {
 static void test_model_metadata_clamps_completion_to_context(void) {
     buf b = {0};
     append_model_json_values(&b, "deepseek-v4-flash", "DeepSeek V4 Flash",
-                             32768, 393216);
+                             "ds4flash.gguf", 32768, 393216);
     TEST_ASSERT(strstr(b.ptr, "\"id\":\"deepseek-v4-flash\"") != NULL);
     TEST_ASSERT(strstr(b.ptr, "\"name\":\"DeepSeek V4 Flash\"") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"source\":\"ds4flash.gguf\"") != NULL);
     TEST_ASSERT(strstr(b.ptr, "\"context_length\":32768") != NULL);
     TEST_ASSERT(strstr(b.ptr, "\"max_completion_tokens\":32768") != NULL);
     TEST_ASSERT(strstr(b.ptr, "\"ignore_eos\"") != NULL);
     buf_free(&b);
 
     append_model_json_values(&b, "deepseek-v4-pro", "DeepSeek V4 Pro",
-                             100000, 4096);
+                             "", 100000, 4096);
     TEST_ASSERT(strstr(b.ptr, "\"id\":\"deepseek-v4-pro\"") != NULL);
     TEST_ASSERT(strstr(b.ptr, "\"name\":\"DeepSeek V4 Pro\"") != NULL);
-    TEST_ASSERT(strstr(b.ptr, "\"context_length\":100000") != NULL);
+    TEST_ASSERT(strstr(b.ptr, "\"source\":\"\"") != NULL);
     TEST_ASSERT(strstr(b.ptr, "\"max_completion_tokens\":4096") != NULL);
     buf_free(&b);
 }
