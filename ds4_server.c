@@ -12798,7 +12798,13 @@ static bool send_model(server *s, int fd, const char *id) {
 static bool send_models(server *s, int fd) {
     buf b = {0};
     buf_puts(&b, "{\"object\":\"list\",\"data\":[");
-    if (ds4_engine_is_glm_dsa(s->engine)) {
+    if (ds4_engine_is_glm53(s->engine)) {
+        append_model_json(&b, s, "glm-5.3-flash");
+        buf_putc(&b, ',');
+        append_model_json(&b, s, "glm-5.3-flash-chat");
+        buf_putc(&b, ',');
+        append_model_json(&b, s, "glm-5.3-flash-reasoner");
+    } else if (ds4_engine_is_glm_dsa(s->engine)) {
         append_model_json(&b, s, "glm-5.2");
         buf_putc(&b, ',');
         append_model_json(&b, s, "glm-5.2-chat");
