@@ -1118,6 +1118,10 @@ static bool model_alias_disables_thinking(const char *model) {
             !strcmp(model, "glm-5.2-no-think") ||
             !strcmp(model, "glm-5.2-nothink") ||
             !strcmp(model, "zai/glm-5.2-chat") ||
+            !strcmp(model, "glm-5.3-chat") ||
+            !strcmp(model, "glm-5.3-no-think") ||
+            !strcmp(model, "glm-5.3-nothink") ||
+            !strcmp(model, "zai/glm-5.3-chat") ||
             !strcmp(model, "glm-5.3-flash-chat") ||
             !strcmp(model, "glm-5.3-flash-no-think") ||
             !strcmp(model, "glm-5.3-flash-nothink") ||
@@ -1129,6 +1133,8 @@ static bool model_alias_enables_thinking(const char *model) {
            (!strcmp(model, "deepseek-reasoner") ||
             !strcmp(model, "glm-5.2-reasoner") ||
             !strcmp(model, "zai/glm-5.2-reasoner") ||
+            !strcmp(model, "glm-5.3-reasoner") ||
+            !strcmp(model, "zai/glm-5.3-reasoner") ||
             !strcmp(model, "glm-5.3-flash-reasoner") ||
             !strcmp(model, "zai/glm-5.3-flash-reasoner"));
 }
@@ -1138,11 +1144,28 @@ static server_model_syntax server_model_syntax_for_engine(ds4_engine *engine) {
            SERVER_MODEL_SYNTAX_GLM : SERVER_MODEL_SYNTAX_DEEPSEEK;
 }
 
+static bool model_source_is_glm53_full(const char *source) {
+    const char *base = source ? strrchr(source, '/') : NULL;
+    base = base ? base + 1 : source;
+    return base && !strncmp(base, "GLM-5.3-", strlen("GLM-5.3-")) &&
+           strncmp(base, "GLM-5.3-Flash-", strlen("GLM-5.3-Flash-"));
+}
+
 static const char *server_model_id_from_engine(ds4_engine *engine) {
     if (ds4_engine_is_glm53(engine)) return "glm-5.3-flash";
-    if (ds4_engine_is_glm_dsa(engine)) return "glm-5.2";
+    if (ds4_engine_is_glm_dsa(engine)) {
+        return model_source_is_glm53_full(ds4_engine_model_path(engine)) ?
+               "glm-5.3" : "glm-5.2";
+    }
     return ds4_engine_model_id(engine) == 1 ?
            "deepseek-v4-pro" : "deepseek-v4-flash";
+}
+
+static const char *server_model_name_from_engine(ds4_engine *engine) {
+    if (model_source_is_glm53_full(ds4_engine_model_path(engine))) {
+        return "GLM 5.3";
+    }
+    return ds4_engine_model_name(engine);
 }
 
 static bool server_model_alias_known(const char *id) {
@@ -1157,6 +1180,14 @@ static bool server_model_alias_known(const char *id) {
             !strcmp(id, "zai/glm-5.2") ||
             !strcmp(id, "zai/glm-5.2-chat") ||
             !strcmp(id, "zai/glm-5.2-reasoner") ||
+            !strcmp(id, "glm-5.3") ||
+            !strcmp(id, "glm-5.3-chat") ||
+            !strcmp(id, "glm-5.3-no-think") ||
+            !strcmp(id, "glm-5.3-nothink") ||
+            !strcmp(id, "glm-5.3-reasoner") ||
+            !strcmp(id, "zai/glm-5.3") ||
+            !strcmp(id, "zai/glm-5.3-chat") ||
+            !strcmp(id, "zai/glm-5.3-reasoner") ||
             !strcmp(id, "glm-5.3-flash") ||
             !strcmp(id, "glm-5.3-flash-chat") ||
             !strcmp(id, "glm-5.3-flash-no-think") ||
@@ -13925,7 +13956,7 @@ static void append_model_json_values(buf *b, const char *id, const char *name,
 static void append_model_json(buf *b, const server *s, const char *id) {
     append_model_json_values(b,
                              id,
-                             ds4_engine_model_name(s->engine),
+                             server_model_name_from_engine(s->engine),
                              path_basename(ds4_engine_model_path(s->engine)),
                              s->ctx_size,
                              s->default_tokens);
@@ -13944,11 +13975,16 @@ static bool send_models(server *s, int fd) {
     buf b = {0};
     buf_puts(&b, "{\"object\":\"list\",\"data\":[");
     if (ds4_engine_is_glm_dsa(s->engine)) {
-        append_model_json(&b, s, "glm-5.2");
+        const char *id = server_model_id_from_engine(s->engine);
+        char chat[64];
+        char reasoner[64];
+        snprintf(chat, sizeof(chat), "%s-chat", id);
+        snprintf(reasoner, sizeof(reasoner), "%s-reasoner", id);
+        append_model_json(&b, s, id);
         buf_putc(&b, ',');
-        append_model_json(&b, s, "glm-5.2-chat");
+        append_model_json(&b, s, chat);
         buf_putc(&b, ',');
-        append_model_json(&b, s, "glm-5.2-reasoner");
+        append_model_json(&b, s, reasoner);
     } else {
         append_model_json(&b, s, "deepseek-v4-flash");
         buf_putc(&b, ',');
@@ -16354,6 +16390,17 @@ static void test_model_alias_thinking_controls(void) {
     TEST_ASSERT(model_alias_enables_thinking("zai/glm-5.2-reasoner"));
     TEST_ASSERT(server_model_alias_known("glm-5.2-chat"));
     TEST_ASSERT(server_model_alias_known("glm-5.2-reasoner"));
+    TEST_ASSERT(model_alias_disables_thinking("glm-5.3-chat"));
+    TEST_ASSERT(model_alias_enables_thinking("glm-5.3-reasoner"));
+    TEST_ASSERT(server_model_alias_known("glm-5.3"));
+    TEST_ASSERT(server_model_alias_known("glm-5.3-chat"));
+    TEST_ASSERT(server_model_alias_known("glm-5.3-reasoner"));
+    TEST_ASSERT(model_source_is_glm53_full(
+        "/models/GLM-5.3-UD-IQ2_XXS_RoutedIQ2XXS_blk78Q2K.gguf"));
+    TEST_ASSERT(!model_source_is_glm53_full(
+        "/models/GLM-5.3-Flash-Q2.gguf"));
+    TEST_ASSERT(!model_source_is_glm53_full(
+        "/models/GLM-5.2-UD-Q2_K_RoutedQ2K.gguf"));
     TEST_ASSERT(model_alias_disables_thinking("glm-5.3-flash-chat"));
     TEST_ASSERT(model_alias_disables_thinking("zai/glm-5.3-flash-chat"));
     TEST_ASSERT(model_alias_enables_thinking("glm-5.3-flash-reasoner"));
