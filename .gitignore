@@ -47,6 +47,7 @@
 /tests/test_linux_memory
 /tests/test_rocm_memory
 /tests/test_deepseek4_vision_image
+/tests/test_prompt_prefix
 *.o
 *.dSYM/
 __pycache__/
