@@ -1206,7 +1206,72 @@ done:
     return rc;
 }
 
-static int check_decoder_suffix(const char *path, const char *prompt_path) {
+/* Compare complete live state while decode crosses ring and compressor
+ * boundaries. A diagnostic switch selects the control path on the same model;
+ * the candidate uses the default implementation, also checked in SSD mode. */
+static int check_decode_control(const char *path, const char *prompt_path, bool streaming, const char *disable) {
+    ds4_engine *engine = NULL;
+    ds4_session *control = NULL, *candidate = NULL;
+    ds4_tokens tokens = {0};
+    char *prompt = NULL, err[256] = "";
+    size_t prompt_bytes;
+    int rc = 1;
+    ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
+        .context_size = 4096, .power_percent = 100, .ssd_streaming = streaming,
+        .ssd_streaming_cache_bytes = UINT64_C(64) << 30};
+    REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
+    REQUIRE(ds4_engine_open(&engine, &opt) == 0);
+    ds4_tokenize_text(engine, prompt, &tokens);
+    REQUIRE(tokens.len > 2112);
+    const int prefixes[] = {511, 2047};
+    for (unsigned pass = 0; pass < sizeof(prefixes) / sizeof(prefixes[0]); pass++) {
+        const int prefix = prefixes[pass];
+        REQUIRE(ds4_session_create(&control, engine, 4096) == 0);
+        REQUIRE(ds4_session_create(&candidate, engine, 4096) == 0);
+        ds4_tokens input = {.v = tokens.v, .len = prefix, .cap = prefix};
+        setenv(disable, "1", 1);
+        REQUIRE(ds4_session_sync(control, &input, err, sizeof(err)) == 0);
+        unsetenv(disable);
+        REQUIRE(ds4_session_sync(candidate, &input, err, sizeof(err)) == 0);
+        for (int step = 0; step <= 64; step++) {
+            ds41_gpu_graph *a = &control->ds41_graph, *b = &candidate->ds41_graph;
+            ds41_state_span sa[54], sb[54];
+            const uint32_t n = ds41_state_spans(a, a->pos, sa);
+            REQUIRE(a->pos == b->pos && n == ds41_state_spans(b, b->pos, sb));
+            REQUIRE(!memcmp(&a->history, &b->history, sizeof(a->history)));
+            REQUIRE(!memcmp(control->logits, candidate->logits, DS4_N_VOCAB * sizeof(float)));
+            for (uint32_t j = 0; j < n; j++) {
+                REQUIRE(sa[j].bytes == sb[j].bytes);
+                if (memcmp(ds4_gpu_tensor_contents(sa[j].tensor),
+                           ds4_gpu_tensor_contents(sb[j].tensor), (size_t)sa[j].bytes)) {
+                    fprintf(stderr, "decode queue state mismatch: pos=%u span=%u\n", a->pos, j);
+                    goto done;
+                }
+            }
+            if (step == 64) break;
+            const int token = tokens.v[prefix + step];
+            setenv(disable, "1", 1);
+            REQUIRE(ds4_session_eval(control, token, err, sizeof(err)) == 0);
+            unsetenv(disable);
+            REQUIRE(ds4_session_eval(candidate, token, err, sizeof(err)) == 0);
+        }
+        fprintf(stderr, "V4.1 decode control %s %s prefix=%d: 65 exact logits/history/KV states PASS\n",
+            disable,
+            streaming ? "SSD" : "resident", prefix);
+        ds4_session_free(candidate); candidate = NULL;
+        ds4_session_free(control); control = NULL;
+    }
+    rc = 0;
+done:
+    if (err[0]) fprintf(stderr, "%s\n", err);
+    unsetenv(disable);
+    if (ds4_gpu_commands_active()) ds4_gpu_end_commands();
+    ds4_session_free(candidate); ds4_session_free(control); ds4_engine_close(engine);
+    ds4_tokens_free(&tokens); free(prompt);
+    return rc;
+}
+
+static int check_decoder_suffix(const char *path, const char *prompt_path, bool short_chunks, bool streaming) {
     ds4_engine *engine = NULL;
     ds4_session *control = NULL, *candidate = NULL;
     ds4_tokens tokens = {0};
@@ -1214,11 +1279,14 @@ static int check_decoder_suffix(const char *path, const char *prompt_path) {
     size_t prompt_bytes;
     int rc = 1;
     ds4_engine_options opt = {.model_path = path, .backend = DS4_BACKEND_METAL,
-        .context_size = 18432, .power_percent = 100, .ssd_streaming = true,
+        .context_size = 18432, .power_percent = 100, .ssd_streaming = streaming,
         .ssd_streaming_cache_bytes = UINT64_C(64) << 30};
-    /* Hold arithmetic fixed to isolate dependency pruning from GEMM tiling. */
-    setenv("DS4_METAL_DISABLE_V41_BATCH_MOE", "1", 1);
-    setenv("DS4_METAL_DISABLE_V41_BATCH_ATTN", "1", 1);
+    /* The short-chunk path preserves full matrix tiles, so exercise the
+     * production batched arithmetic as well as its live KV frontier. */
+    if (!short_chunks) {
+        setenv("DS4_METAL_DISABLE_V41_BATCH_MOE", "1", 1);
+        setenv("DS4_METAL_DISABLE_V41_BATCH_ATTN", "1", 1);
+    }
     REQUIRE(imatrix_read_text_file(prompt_path, &prompt, &prompt_bytes));
     REQUIRE(ds4_engine_open(&engine, &opt) == 0);
     ds4_encode_chat_prompt(engine, NULL, prompt, DS4_THINK_NONE, &tokens);
@@ -1227,11 +1295,16 @@ static int check_decoder_suffix(const char *path, const char *prompt_path) {
     REQUIRE(ds4_session_create(&candidate, engine, 18432) == 0);
     ds41_gpu_graph *a = &control->ds41_graph, *b = &candidate->ds41_graph;
     for (uint32_t pass = 0; pass < 2; pass++) {
-        const uint32_t start = a->pos, count = 8192;
+        const uint32_t start = a->pos, count = short_chunks ? (pass ? 7956u : 3072u) : 8192u;
         setenv("DS4_METAL_DISABLE_V41_DECODER_SUFFIX", "1", 1);
         double t0 = now_sec();
+        const uint32_t prefix = short_chunks ? count - count % 2048u : count;
         REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights,
-            tokens.v + start, count, NULL, NULL, (int)(start + count), NULL, NULL));
+            tokens.v + start, prefix, NULL, NULL, (int)(start + count), NULL, NULL));
+        if (prefix < count)
+            REQUIRE(ds41_graph_prefill(a, &engine->model, &engine->weights,
+                tokens.v + start + prefix, count - prefix, NULL, NULL,
+                (int)(start + count), NULL, NULL));
         const double reference = now_sec() - t0;
         unsetenv("DS4_METAL_DISABLE_V41_DECODER_SUFFIX");
         t0 = now_sec();
@@ -1944,8 +2017,20 @@ int main(int argc, char **argv) {
         return check_prefill_alias_fallback(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--chunk-prefill"))
         return check_wide_prefill(argv[1], argv[3], false, false, "DS4_METAL_DISABLE_V41_WIDE_CHUNK");
+    if (argc == 4 && !strcmp(argv[2], "--q8-bf16-fusion"))
+        return check_decode_control(argv[1], argv[3], false, "DS4_METAL_DISABLE_V41_Q8_BF16_FUSION");
+    if (argc == 4 && !strcmp(argv[2], "--q8-bf16-fusion-ssd"))
+        return check_decode_control(argv[1], argv[3], true, "DS4_METAL_DISABLE_V41_Q8_BF16_FUSION");
+    if (argc == 4 && !strcmp(argv[2], "--decode-queue"))
+        return check_decode_control(argv[1], argv[3], false, "DS4_METAL_DISABLE_V41_SOLO_DECODE_QUEUE");
+    if (argc == 4 && !strcmp(argv[2], "--decode-queue-ssd"))
+        return check_decode_control(argv[1], argv[3], true, "DS4_METAL_DISABLE_V41_SOLO_DECODE_QUEUE");
     if (argc == 4 && !strcmp(argv[2], "--decoder-suffix"))
-        return check_decoder_suffix(argv[1], argv[3]);
+        return check_decoder_suffix(argv[1], argv[3], false, true);
+    if (argc == 4 && !strcmp(argv[2], "--short-decoder-suffix"))
+        return check_decoder_suffix(argv[1], argv[3], true, false);
+    if (argc == 4 && !strcmp(argv[2], "--short-decoder-suffix-ssd"))
+        return check_decoder_suffix(argv[1], argv[3], true, true);
     if (argc == 4 && !strcmp(argv[2], "--sweep-partitions"))
         return check_sweep_partitions(argv[1], argv[3]);
     if (argc == 4 && !strcmp(argv[2], "--deferred-decoder"))
@@ -1978,6 +2063,8 @@ int main(int argc, char **argv) {
                         "--prefill-alias-fallback PROMPT_FILE | "
                         "--sweep-partitions PROMPT_FILE | "
                         "--deferred-decoder PROMPT_FILE | "
+                        "--decode-queue PROMPT_FILE | --decode-queue-ssd PROMPT_FILE | "
+                        "--q8-bf16-fusion PROMPT_FILE | --q8-bf16-fusion-ssd PROMPT_FILE | "
                         "--decoder-suffix PROMPT_FILE | --session-accounting | --memory-plan | "
                         "RENDERED_PROMPT [GENERATE])\n", argv[0]);
         return 2;
