@@ -42241,7 +42241,6 @@ struct ds4_engine {
     float mtp_margin;
     float dspark_confidence_threshold;
     bool dspark_confidence_threshold_set;
-    char *model_path;
     char *directional_steering_file;
     float *directional_steering_dirs;
     float directional_steering_attn_scale;
@@ -70247,6 +70246,7 @@ static int ds4_engine_open_internal(ds4_engine **out,
         }
         /* The agent may change directory before creating its first session.
          * Engram readers reopen this file and check it against model.fd. */
+        free(e->model_path);
         e->model_path = realpath(opt->model_path, NULL);
         if (!e->model_path) {
             fprintf(stderr, "ds4: cannot resolve V4.1 model path: %s\n", strerror(errno));
