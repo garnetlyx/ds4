@@ -70,6 +70,8 @@ typedef struct {
     bool cuda_tensor_parallel;
     bool show_output;
     bool teacher_forced_decode;
+    bool glm_mtp;
+    bool glm_mtp_timing;
     bool dspark;
     bool dspark_confidence_threshold_set;
     float dspark_confidence_threshold;
@@ -268,6 +270,11 @@ static bench_config parse_options(int argc, char **argv) {
 
         if (!strcmp(arg, "-m") || !strcmp(arg, "--model")) {
             c.model_path = need_arg(&i, argc, argv, arg);
+        } else if (!strcmp(arg, "--mtp")) {
+            c.glm_mtp = true;
+        } else if (!strcmp(arg, "--mtp-timing")) {
+            c.glm_mtp = true;
+            c.glm_mtp_timing = true;
         } else if (!strcmp(arg, "--mtp-model")) {
             c.mtp_path = need_arg(&i, argc, argv, arg);
         } else if (!strcmp(arg, "--dspark")) {
@@ -660,6 +667,8 @@ int main(int argc, char **argv) {
         .power_percent = cfg.power_percent,
         .warm_weights = cfg.warm_weights,
         .quality = cfg.quality,
+        .glm_mtp = cfg.glm_mtp,
+        .glm_mtp_timing = cfg.glm_mtp_timing,
         .dspark = cfg.dspark,
         .dspark_confidence_threshold = cfg.dspark_confidence_threshold,
         .dspark_confidence_threshold_set = cfg.dspark_confidence_threshold_set,
@@ -786,9 +795,10 @@ int main(int argc, char **argv) {
     const bool distributed =
         cfg.dist.role == DS4_DISTRIBUTED_COORDINATOR ||
         cfg.tp.role == DS4_TP_LEADER;
-    const bool speculative = cfg.dspark && ds4_engine_mtp_draft_tokens(engine) > 1;
-    if (cfg.dspark && !speculative) {
-        fprintf(stderr, "ds4-bench: DSpark support model did not enable speculative decoding\n");
+    const bool speculative = (cfg.dspark || cfg.glm_mtp) &&
+        ds4_engine_mtp_draft_tokens(engine) > 1;
+    if ((cfg.dspark || cfg.glm_mtp) && !speculative) {
+        fprintf(stderr, "ds4-bench: requested speculative decode was not enabled by this model\n");
         if (out != stdout) fclose(out);
         ds4_session_free(session);
         ds4_tokens_free(&prompt);
@@ -797,7 +807,7 @@ int main(int argc, char **argv) {
     }
     if (speculative) {
         fprintf(stderr,
-                "ds4-bench: DSpark enabled with draft width %d; frontier restoration uses session snapshots\n",
+                "ds4-bench: embedded MTP/DSpark enabled with draft width %d; frontier restoration uses session snapshots\n",
                 ds4_engine_mtp_draft_tokens(engine));
     }
     ds4_session_snapshot snap = {0};
@@ -938,12 +948,12 @@ int main(int argc, char **argv) {
                     }
                 }
                 if (ntok < 0) {
-                    fprintf(stderr, "ds4-bench: DSpark decode at frontier %d failed: %s\n", frontier, err);
+                    fprintf(stderr, "ds4-bench: speculative decode at frontier %d failed: %s\n", frontier, err);
                     rc = 1;
                     break;
                 }
                 if (ntok == 0) {
-                    fprintf(stderr, "ds4-bench: DSpark decode at frontier %d accepted no tokens\n", frontier);
+                    fprintf(stderr, "ds4-bench: speculative decode at frontier %d accepted no tokens\n", frontier);
                     rc = 1;
                     break;
                 }
