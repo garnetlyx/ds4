@@ -72,13 +72,17 @@ kernel void kernel_dsv41_quantize(
     const float amax = simd_max(abs(value));
     float result = value;
     if (args.mode == 1u) {
-        const float scale = dsv41_pow2_ceil(max(amax, 1.0e-4f) * (1.0f / 448.0f));
-        result = copysign(dsv4_e4m3fn_dequant(abs(value) / scale), value) * scale;
+        /* Exact divisions keep E4M3/E2M1 grid ties from flipping under
+         * fast-math reciprocal contraction; matches the CPU reference. */
+        const float scale = dsv41_pow2_ceil(dsv4_exact_div(max(amax, 1.0e-4f), 448.0f));
+        result = copysign(dsv4_e4m3fn_dequant(dsv4_exact_div(abs(value), scale)), value) * scale;
     } else if (args.mode == 2u || args.mode == 3u) {
+        const float block_scale = dsv4_exact_div(
+            max(amax, args.mode == 3u ? 0.01171875f : 7.052966104933725e-38f), 6.0f);
         const float scale = args.mode == 3u
-            ? dsv4_e4m3fn_dequant(max(amax, 0.01171875f) / 6.0f)
-            : dsv41_pow2_ceil(max(amax, 7.052966104933725e-38f) * (1.0f / 6.0f));
-        result = copysign(dsv4_e2m1fn_dequant(abs(value) / scale), value) * scale;
+            ? dsv4_e4m3fn_dequant(block_scale)
+            : dsv41_pow2_ceil(block_scale);
+        result = copysign(dsv4_e2m1fn_dequant(dsv4_exact_div(abs(value), scale)), value) * scale;
     }
     if (valid) x[index] = dsv41_bf16(result);
 }

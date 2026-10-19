@@ -822,8 +822,11 @@ kernel void kernel_dsv4_comp_row_finalize_f32(
         }
         if (tiitg < 128) {
             const float amax = max(absbuf[block_base], 7.052966104933725e-38f);
-            const float scale = exp2(ceil(log2(amax / 6.0f)));
-            index_row[tiitg] = dsv4_e2m1fn_dequant(clamp(v / scale, -6.0f, 6.0f)) * scale;
+            /* Exact division keeps E2M1 grid ties from flipping under
+             * fast-math reciprocal contraction; see kernel_dsv41_quantize. */
+            const float scale = exp2(ceil(log2(dsv4_exact_div(amax, 6.0f))));
+            index_row[tiitg] = dsv4_e2m1fn_dequant(
+                clamp(dsv4_exact_div(v, scale), -6.0f, 6.0f)) * scale;
         }
     }
 }
