@@ -352,6 +352,7 @@ static void print_server_api(FILE *fp, const help_colors *c) {
     opt(fp, c, "--trace FILE", "Write prompts, cache decisions, output, and tool calls.");
     opt(fp, c, "--batched-session N", "Keep N resident sessions and batch decode-ready requests.");
     opt(fp, c, "--mixed-prefill-quantum N", "Prefill chunk while generations are active. Default: 128; GLM-5.3 minimum: 1024");
+    opt(fp, c, "--think-level N", "Default thinking effort for requests that do not pick one. Default: 75; 0 disables thinking.");
     para(fp, c, "Endpoints: /v1/chat/completions, /v1/responses, /v1/completions, and /v1/messages.");
     para(fp, c, "Model endpoint aliases include deepseek-v4-flash and deepseek-v4-pro; both serve the loaded GGUF.");
     fputc('\n', fp);
@@ -360,6 +361,7 @@ static void print_server_api(FILE *fp, const help_colors *c) {
 static void print_server_thinking(FILE *fp, const help_colors *c) {
     title(fp, c, "Server Thinking Defaults");
     para(fp, c, "DeepSeek-compatible chat requests default to high-effort thinking.");
+    para(fp, c, "--think-level N sets a different default effort (1..100; 0 disables) for requests that omit reasoning_effort.");
     para(fp, c, "reasoning_effort=max or output_config.effort=max requests Think Max.");
     para(fp, c, "Think Max requires --ctx >= 393216; smaller contexts use high.");
     para(fp, c, "thinking={type:disabled}, think=false, or model=deepseek-chat selects non-thinking mode.");

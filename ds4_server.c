@@ -706,6 +706,7 @@ static void random_tool_id(char *dst, size_t dstlen, api_style api) {
 
 typedef struct server server;
 static void server_inference_lock(server *s);
+static ds4_think_mode server_request_think_default(server *s);
 static void server_inference_unlock(server *s);
 static bool server_encode_image(server *s, const server_image_input *input,
                                 ds4_vision_embedding *out,
@@ -4136,7 +4137,7 @@ static bool parse_chat_request(ds4_engine *e, server *s, const char *body, int d
     bool tool_choice_none = false;
     bool got_thinking = false;
     bool thinking_enabled = true;
-    ds4_think_mode reasoning_effort = DS4_THINK_HIGH;
+    ds4_think_mode reasoning_effort = server_request_think_default(s);
     chat_msgs msgs = {0};
     char *tool_schemas = NULL;
 
@@ -4334,7 +4335,7 @@ static bool parse_anthropic_request(ds4_engine *e, server *s, const char *body, 
     bool tool_choice_none = false;
     bool got_thinking = false;
     bool thinking_enabled = true;
-    ds4_think_mode reasoning_effort = DS4_THINK_HIGH;
+    ds4_think_mode reasoning_effort = server_request_think_default(s);
     chat_msgs msgs = {0};
     char *system = NULL;
     char *tool_schemas = NULL;
@@ -5323,7 +5324,7 @@ static bool parse_responses_request(ds4_engine *e, server *s, const char *body, 
     bool tool_choice_none = false;
     bool got_thinking = false;
     bool thinking_enabled = true;
-    ds4_think_mode reasoning_effort = DS4_THINK_HIGH;
+    ds4_think_mode reasoning_effort = server_request_think_default(s);
     chat_msgs msgs = {0};
     buf loaded_tool_schemas = {0};
     char *instructions = NULL;
@@ -5619,7 +5620,7 @@ static bool parse_prompt(const char **p, char **out) {
     return true;
 }
 
-static bool parse_completion_request(ds4_engine *e, const char *body, int def_tokens,
+static bool parse_completion_request(ds4_engine *e, server *s, const char *body, int def_tokens,
                                      int ctx_size, request *r, char *err, size_t errlen) {
     request_init(r, REQ_COMPLETION, def_tokens);
     r->model_syntax = server_model_syntax_for_engine(e);
@@ -5627,7 +5628,7 @@ static bool parse_completion_request(ds4_engine *e, const char *body, int def_to
     char *prompt = NULL;
     bool got_thinking = false;
     bool thinking_enabled = true;
-    ds4_think_mode reasoning_effort = DS4_THINK_HIGH;
+    ds4_think_mode reasoning_effort = server_request_think_default(s);
 
     json_ws(&p);
     if (*p != '{') goto bad;
@@ -10187,6 +10188,10 @@ static void server_image_cache_put(server_image_cache *cache,
 static bool id_list_contains(const stop_list *ids, const char *id);
 static void id_list_push_unique(stop_list *ids, const char *id);
 
+/* Thinking effort applied when a request does not select one itself.
+ * Unit tests exercise the parsers without a live server. */
+static ds4_think_mode server_request_think_default(server *s);
+
 struct server {
     ds4_engine *engine;
     ds4_tp *tp_leader;
@@ -10197,6 +10202,8 @@ struct server {
     pthread_t *slot_threads;
     pthread_t decode_thread;
     int default_tokens;
+    /* Request thinking default when the client does not pick an effort. */
+    ds4_think_mode default_think;
     kv_disk_cache kv;
     tool_memory tool_mem;
     server_image_cache image_cache; /* Protected by inference_mu. */
@@ -10225,6 +10232,10 @@ struct server {
     pthread_mutex_t trace_mu;
     uint64_t trace_seq;
 };
+
+static ds4_think_mode server_request_think_default(server *s) {
+    return s ? s->default_think : DS4_THINK_HIGH;
+}
 
 static void server_inference_lock(server *s) {
     pthread_mutex_lock(&s->inference_mu);
@@ -15386,7 +15397,7 @@ static void *client_main(void *arg) {
         ok = parse_responses_request(s->engine, s, hr.body, s->default_tokens,
                                      ctx_size, &req, err, sizeof(err));
     } else if (!strcmp(hr.method, "POST") && !strcmp(hr.path, "/v1/completions")) {
-        ok = parse_completion_request(s->engine, hr.body, s->default_tokens,
+        ok = parse_completion_request(s->engine, s, hr.body, s->default_tokens,
                                       ctx_size, &req, err, sizeof(err));
     } else {
         http_error(fd, s->enable_cors, 404, "unknown endpoint");
@@ -15486,6 +15497,7 @@ typedef struct {
     int port;
     int ctx_size;
     int default_tokens;
+    ds4_think_mode default_think;
     const char *chdir_path;
     const char *trace_path;
     const char *kv_disk_dir;
@@ -15644,6 +15656,7 @@ static server_config parse_options(int argc, char **argv) {
         .port = 8000,
         .ctx_size = 32768,
         .default_tokens = 393216,
+        .default_think = DS4_THINK_HIGH,
         .tool_memory_max_ids = DS4_TOOL_MEMORY_DEFAULT_MAX_IDS,
         .mixed_prefill_quantum = 128,
     };
@@ -15724,6 +15737,13 @@ static server_config parse_options(int argc, char **argv) {
             c.ctx_size = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "-n") || !strcmp(arg, "--tokens")) {
             c.default_tokens = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
+        } else if (!strcmp(arg, "--think-level")) {
+            if (!ds4_think_mode_parse_level(need_arg(&i, argc, argv, arg),
+                                            &c.default_think)) {
+                server_log(DS4_LOG_DEFAULT,
+                           "ds4-server: --think-level requires an integer from 0 to 100");
+                exit(2);
+            }
         } else if (!strcmp(arg, "-t") || !strcmp(arg, "--threads")) {
             c.engine.n_threads = parse_int_arg(need_arg(&i, argc, argv, arg), arg);
         } else if (!strcmp(arg, "--chdir")) {
@@ -16010,6 +16030,7 @@ int main(int argc, char **argv) {
     s.mixed_prefill_quantum = cfg.mixed_prefill_quantum;
     s.last_prefill_slot = slot_count - 1;
     s.default_tokens = cfg.default_tokens;
+    s.default_think = cfg.default_think;
     s.disable_exact_dsml_tool_replay = cfg.disable_exact_dsml_tool_replay;
     s.tool_mem.max_entries = cfg.tool_memory_max_ids;
     s.enable_cors = cfg.enable_cors;
@@ -18206,6 +18227,31 @@ static void test_request_defaults_use_min_p_filtering(void) {
     TEST_ASSERT(r.top_k == 0);
     TEST_ASSERT(r.min_p == DS4_DEFAULT_MIN_P);
     TEST_ASSERT(!r.ignore_eos);
+    request_free(&r);
+}
+
+static void test_server_think_level_default(void) {
+    request r;
+    char err[128] = {0};
+    server s = {
+        .default_think = (ds4_think_mode)(DS4_THINK_LEVEL_BASE + 25),
+        .tool_mu = PTHREAD_MUTEX_INITIALIZER,
+    };
+    bool ok = parse_chat_request(
+        NULL, &s,
+        "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+        128, 32768, &r, err, sizeof(err));
+    TEST_ASSERT(ok);
+    TEST_ASSERT(r.think_mode == (ds4_think_mode)(DS4_THINK_LEVEL_BASE + 25));
+    request_free(&r);
+
+    /* An explicit request effort still wins over the server default. */
+    ok = parse_chat_request(
+        NULL, &s,
+        "{\"reasoning_effort\":\"none\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}",
+        128, 32768, &r, err, sizeof(err));
+    TEST_ASSERT(ok);
+    TEST_ASSERT(r.think_mode == DS4_THINK_NONE);
     request_free(&r);
 }
 
@@ -21030,7 +21076,7 @@ static void test_request_parsers_reject_malformed_duplicate_owned_fields(void) {
     TEST_ASSERT(!ok);
     if (ok) request_free(&r);
 
-    ok = parse_completion_request(NULL,
+    ok = parse_completion_request(NULL, NULL,
         "{\"prompt\":\"hello\",\"prompt\":\"bad\\q\",\"max_tokens\":1}",
         1, 100, &r, err, sizeof(err));
     TEST_ASSERT(!ok);
@@ -23069,6 +23115,7 @@ static void ds4_server_unit_tests_run(void) {
     test_slot_routing_staleness_tiers();
     test_dispatch_routes_alien_request_to_empty_slot();
     test_request_defaults_use_min_p_filtering();
+    test_server_think_level_default();
     test_chat_ignore_eos_contract();
     test_reasoning_effort_mapping();
     test_model_alias_thinking_controls();
