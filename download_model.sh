@@ -797,11 +797,13 @@ else
     download_one "$MODEL_FILE"
 fi
 
-# The transfer is finished: nothing in .cache/huggingface is still in flight.
-if [ -d "$OUT_DIR/.cache/huggingface" ]; then
-    rm -rf "$OUT_DIR/.cache/huggingface"
-    rmdir "$OUT_DIR/.cache" 2>/dev/null || true
-fi
+# This invocation's own entries were removed per file. Drop the bookkeeping
+# directories only if that left them empty: another invocation may be
+# downloading into the same OUT_DIR right now, and its metadata is not ours
+# to delete.
+rmdir "$OUT_DIR/.cache/huggingface/download" \
+      "$OUT_DIR/.cache/huggingface" \
+      "$OUT_DIR/.cache" 2>/dev/null || true
 
 if [ "$MODEL" = "ds4f-dspark" ]; then
     echo
