@@ -597,10 +597,15 @@ download_one_hf() {
         "$HF_CMD" download "$REPO" "$file" --repo-type model --local-dir "$OUT_DIR"
     fi
 
-    # hf leaves <local-dir>/.cache/huggingface bookkeeping beside the weights;
-    # a finished download does not need it (hf re-hashes the local file when
-    # it is absent), so the weights tree keeps no cache of its own.
-    rm -rf "$OUT_DIR/.cache"
+    # hf leaves per-file bookkeeping in <local-dir>/.cache/huggingface/download;
+    # a finished file does not need it (hf re-hashes the local file when the
+    # metadata is absent). Remove only this file's entries so a concurrent
+    # download into the same directory keeps its own; the batch cleanup below
+    # drops the rest once the whole transfer is done.
+    local bookkeeping="$OUT_DIR/.cache/huggingface/download"
+    if [ -n "${local_file:-}" ]; then
+        rm -f "$bookkeeping/$local_file.metadata" "$bookkeeping/$local_file.lock"
+    fi
 
     if [ "$hf_out" != "$out" ] && [ -s "$hf_out" ]; then
         mv "$hf_out" "$out"
@@ -790,6 +795,12 @@ elif [ -n "$MODEL_FILES" ]; then
     done
 else
     download_one "$MODEL_FILE"
+fi
+
+# The transfer is finished: nothing in .cache/huggingface is still in flight.
+if [ -d "$OUT_DIR/.cache/huggingface" ]; then
+    rm -rf "$OUT_DIR/.cache/huggingface"
+    rmdir "$OUT_DIR/.cache" 2>/dev/null || true
 fi
 
 if [ "$MODEL" = "ds4f-dspark" ]; then
