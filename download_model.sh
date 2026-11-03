@@ -597,6 +597,11 @@ download_one_hf() {
         "$HF_CMD" download "$REPO" "$file" --repo-type model --local-dir "$OUT_DIR"
     fi
 
+    # hf leaves <local-dir>/.cache/huggingface bookkeeping beside the weights;
+    # a finished download does not need it (hf re-hashes the local file when
+    # it is absent), so the weights tree keeps no cache of its own.
+    rm -rf "$OUT_DIR/.cache"
+
     if [ "$hf_out" != "$out" ] && [ -s "$hf_out" ]; then
         mv "$hf_out" "$out"
         rmdir "$(dirname "$hf_out")" 2>/dev/null || true
