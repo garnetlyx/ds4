@@ -556,6 +556,21 @@ verify_download() {
     fi
 }
 
+# hf keeps per-file bookkeeping under .cache/huggingface/download and mirrors
+# the remote directory structure there, so a nested remote path (e.g.
+# UD-Q4_K_XL/model.gguf) stores its metadata one level down. Match on the local
+# basename to cover both shapes, and remove only entries of the file this
+# invocation was responsible for — a concurrent download into the same OUT_DIR
+# keeps its own.
+prune_hf_bookkeeping() {
+    bookkeeping="$OUT_DIR/.cache/huggingface/download"
+    [ -n "${local_file:-}" ] || return 0
+    stamp="$(basename "$local_file")"
+    [ -d "$bookkeeping" ] || return 0
+    find "$bookkeeping" \( -name "$stamp.metadata" -o -name "$stamp.lock" \) \
+        -type f -delete 2>/dev/null || true
+}
+
 download_one_hf() {
     file=$1
     local_file=$(local_download_name "$file")
@@ -566,6 +581,9 @@ download_one_hf() {
     mkdir -p "$(dirname "$out")"
 
     if [ -s "$out" ]; then
+        # Already present: hf may have left bookkeeping from the run that
+        # fetched it, and this invocation will not download anything.
+        prune_hf_bookkeeping
         verify_download "$file" "$out"
         echo "Already downloaded: $out"
         return
@@ -597,18 +615,7 @@ download_one_hf() {
         "$HF_CMD" download "$REPO" "$file" --repo-type model --local-dir "$OUT_DIR"
     fi
 
-    # hf keeps per-file bookkeeping under .cache/huggingface/download and
-    # mirrors the remote directory structure there, so a nested remote path
-    # (e.g. UD-Q4_K_XL/model.gguf) stores its metadata one level down. Match
-    # on the local basename to cover both shapes, and remove only entries of
-    # the file this invocation just finished — a concurrent download into the
-    # same OUT_DIR keeps its own.
-    local bookkeeping="$OUT_DIR/.cache/huggingface/download" stamp
-    if [ -n "${local_file:-}" ]; then
-        stamp="$(basename "$local_file")"
-        find "$bookkeeping" \( -name "$stamp.metadata" -o -name "$stamp.lock" \) \
-            -type f -delete 2>/dev/null || true
-    fi
+    prune_hf_bookkeeping
 
     if [ "$hf_out" != "$out" ] && [ -s "$hf_out" ]; then
         mv "$hf_out" "$out"
