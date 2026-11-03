@@ -597,14 +597,17 @@ download_one_hf() {
         "$HF_CMD" download "$REPO" "$file" --repo-type model --local-dir "$OUT_DIR"
     fi
 
-    # hf leaves per-file bookkeeping in <local-dir>/.cache/huggingface/download;
-    # a finished file does not need it (hf re-hashes the local file when the
-    # metadata is absent). Remove only this file's entries so a concurrent
-    # download into the same directory keeps its own; the batch cleanup below
-    # drops the rest once the whole transfer is done.
-    local bookkeeping="$OUT_DIR/.cache/huggingface/download"
+    # hf keeps per-file bookkeeping under .cache/huggingface/download and
+    # mirrors the remote directory structure there, so a nested remote path
+    # (e.g. UD-Q4_K_XL/model.gguf) stores its metadata one level down. Match
+    # on the local basename to cover both shapes, and remove only entries of
+    # the file this invocation just finished — a concurrent download into the
+    # same OUT_DIR keeps its own.
+    local bookkeeping="$OUT_DIR/.cache/huggingface/download" stamp
     if [ -n "${local_file:-}" ]; then
-        rm -f "$bookkeeping/$local_file.metadata" "$bookkeeping/$local_file.lock"
+        stamp="$(basename "$local_file")"
+        find "$bookkeeping" \( -name "$stamp.metadata" -o -name "$stamp.lock" \) \
+            -type f -delete 2>/dev/null || true
     fi
 
     if [ "$hf_out" != "$out" ] && [ -s "$hf_out" ]; then
@@ -797,13 +800,13 @@ else
     download_one "$MODEL_FILE"
 fi
 
-# This invocation's own entries were removed per file. Drop the bookkeeping
-# directories only if that left them empty: another invocation may be
-# downloading into the same OUT_DIR right now, and its metadata is not ours
-# to delete.
-rmdir "$OUT_DIR/.cache/huggingface/download" \
-      "$OUT_DIR/.cache/huggingface" \
-      "$OUT_DIR/.cache" 2>/dev/null || true
+# This invocation's own entries were removed per file. Drop empty bookkeeping
+# directories only: another invocation may be downloading into the same
+# OUT_DIR right now, and its metadata is not ours to delete.
+if [ -d "$OUT_DIR/.cache/huggingface" ]; then
+    find "$OUT_DIR/.cache/huggingface" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    rmdir "$OUT_DIR/.cache/huggingface" "$OUT_DIR/.cache" 2>/dev/null || true
+fi
 
 if [ "$MODEL" = "ds4f-dspark" ]; then
     echo
